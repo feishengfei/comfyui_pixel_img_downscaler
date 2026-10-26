@@ -1,118 +1,300 @@
+import os
+import re
+import numpy as np
+from pathlib import Path
 from inspect import cleandoc
-class Example:
+from PIL import Image
+
+def parse_gpl_palette(gpl_file_path: str):
     """
-    A example node
-
-    Class methods
-    -------------
-    INPUT_TYPES (dict):
-        Tell the main program input parameters of nodes.
-    IS_CHANGED:
-        optional method to control when the node is re executed.
-
-    Attributes
-    ----------
-    RETURN_TYPES (`tuple`):
-        The type of each element in the output tulple.
-    RETURN_NAMES (`tuple`):
-        Optional: The name of each output in the output tulple.
-    FUNCTION (`str`):
-        The name of the entry-point method. For example, if `FUNCTION = "execute"` then it will run Example().execute()
-    OUTPUT_NODE ([`bool`]):
-        If this node is an output node that outputs a result/image from the graph. The SaveImage node is an example.
-        The backend iterates on these output nodes and tries to execute all their parents if their parent graph is properly connected.
-        Assumed to be False if not present.
-    CATEGORY (`str`):
-        The category the node should appear in the UI.
-    execute(s) -> tuple || None:
-        The entry point method. The name of this method must be the same as the value of property `FUNCTION`.
-        For example, if `FUNCTION = "execute"` then this method's name must be `execute`, if `FUNCTION = "foo"` then it must be `foo`.
+    读取Aseprite导出的 .gpl (GIMP Palette)调色板文件
+    返回pillow可使用的一维palette列表 [r,g,b,r,g,b...]，最多256色
+    注意：只解析RGB，不解析alpha；空路径返回None
     """
-    def __init__(self):
-        pass
+    p = Path(gpl_file_path).absolute()
+    if not p.exists() or not p.is_file():
+        return None
+    palette = []
+    with open(p, "r", encoding="utf‑8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("GIMP Palette"):
+                continue
+            parts = line.split()
+            if len(parts) >=3:
+                try:
+                    r = int(parts[0])
+                    g = int(parts[1])
+                    b = int(parts[2])
+                    palette.extend([r,g,b])
+                except ValueError:
+                    continue
+    # 补齐到256色长度（pillow P模式要求768字节 =256*3）
+    while len(palette) < 768:
+        palette.extend([0,0,0])
+    return palette
 
+
+def process_one_pil_image(pil_img: Image.Image,
+                           resize_width:int,
+                           resize_height:int,
+                           resize_filter:str,
+                           color_mode:str,
+                           num_index_colors:int,
+                           palette_gpl:str):
+    """
+    公共处理逻辑：缩放 + 色彩模式转换
+    resize_filter: NEAREST / BILINEAR / BICUBIC / LANCZOS
+    color_mode: rgba / rgb / grayscale / indexed_palette
+    palette_gpl: gpl调色板绝对路径，空字符串使用自适应量化
+    返回处理完成PIL Image对象
+    """
+    filter_map = {
+        "NEAREST": Image.Resampling.NEAREST,
+        "BILINEAR": Image.Resampling.BILINEAR,
+        "BICUBIC": Image.Resampling.BICUBIC,
+        "LANCZOS": Image.Resampling.LANCZOS
+    }
+    pil_img = pil_img.resize((resize_width, resize_height), resample=filter_map[resize_filter])
+
+    if color_mode == "rgba":
+        pil_img = pil_img.convert("RGBA")
+    elif color_mode == "rgb":
+        pil_img = pil_img.convert("RGB")
+    elif color_mode == "grayscale":
+        pil_img = pil_img.convert("L")
+    elif color_mode == "indexed_palette":
+        gpl_data = parse_gpl_palette(palette_gpl) if palette_gpl.strip() else None
+        if gpl_data is not None:
+            # 使用外部GPL调色板
+            pal_img = Image.new("P", (1,1))
+            pal_img.putpalette(gpl_data)
+            pil_img = pil_img.quantize(palette=pal_img, colors=num_index_colors)
+        else:
+            # 图片自身自适应调色板
+            pil_img = pil_img.quantize(colors=num_index_colors)
+    return pil_img
+
+
+def save_multi_formats(pil_img:Image.Image, out_base:Path, enable_bmp:bool):
+    """
+    PNG强制总是输出；可选额外输出BMP
+    注意：P(indexed)模式保存BMP会自动降级RGB，丢失调色板与透明
+    返回：png输出完整路径
+    """
+    png_path = out_base.with_suffix(".png")
+    pil_img.save(png_path, format="PNG")
+    print(f"💾 Saved png: {png_path}")
+
+    if enable_bmp:
+        bmp_path = out_base.with_suffix(".bmp")
+        if pil_img.mode == "P":
+            # indexed模式BMP不支持，降级RGB
+            bmp_img = pil_img.convert("RGB")
+            bmp_img.save(bmp_path, format="BMP")
+            print(f"💾 Saved bmp (P‑mode downgraded to RGB): {bmp_path}")
+        else:
+            pil_img.save(bmp_path, format="BMP")
+            print(f"💾 Saved bmp: {bmp_path}")
+    return str(png_path)
+
+
+class ImageDownscaleQuantizeSingle:
+    """
+    单图下采样&色彩量化节点：接收ComfyUI IMAGE张量
+    - 缩放尺寸最大256px
+    - 支持rgba/rgb/grayscale/indexed_palette
+    - 可加载Aseprite导出 .gpl调色板
+    - PNG强制输出；可额外输出BMP
+    注意：
+      1. indexed(P模式)仅PNG完整保存调色板+透明；BMP会降级丢失调色板与透明；
+      2. Aseprite: Sprite‑>Save Palette导出 .gpl(GIMP Palette)，不支持ase/act；
+      3. 像素画优先resize_filter=NEAREST；照片使用LANCZOS
+    """
     @classmethod
     def INPUT_TYPES(s):
-        """
-            Return a dictionary which contains config for all input fields.
-            Some types (string): "MODEL", "VAE", "CLIP", "CONDITIONING", "LATENT", "IMAGE", "INT", "STRING", "FLOAT".
-            Input types "INT", "STRING" or "FLOAT" are special values for fields on the node.
-            The type can be a list for selection.
-
-            Returns: `dict`:
-                - Key input_fields_group (`string`): Can be either required, hidden or optional. A node class must have property `required`
-                - Value input_fields (`dict`): Contains input fields config:
-                    * Key field_name (`string`): Name of a entry-point method's argument
-                    * Value field_config (`tuple`):
-                        + First value is a string indicate the type of field or a list for selection.
-                        + Secound value is a config for type "INT", "STRING" or "FLOAT".
-        """
         return {
             "required": {
-                "image": ("Image", { "tooltip": "This is an image"}),
-                "int_field": ("INT", {
-                    "default": 0,
-                    "min": 0, #Minimum value
-                    "max": 4096, #Maximum value
-                    "step": 64, #Slider's step
-                    "display": "number" # Cosmetic only: display as "number" or "slider"
+                "image": ("IMAGE", {"tooltip":"来自Load Image，取batch第0张图片"}),
+                "resize_width": ("INT", {
+                    "default":128, "min":8, "max":256, "step":1, "display":"number",
+                    "tooltip":"输出图片宽度，上限256"
                 }),
-                "float_field": ("FLOAT", {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 10.0,
-                    "step": 0.01,
-                    "round": 0.001, #The value represeting the precision to round to, will be set to the step value by default. Can be set to False to disable rounding.
-                    "display": "number"}),
-                "print_to_screen": (["enable", "disable"],),
-                "string_field": ("STRING", {
-                    "multiline": False, #True if you want the field to look like the one on the ClipTextEncode node
-                    "default": "Hello World!"
+                "resize_height": ("INT", {
+                    "default":128, "min":8, "max":256, "step":1, "display":"number",
+                    "tooltip":"输出图片高度，上限256"
+                }),
+                "resize_filter": (["NEAREST","BILINEAR","BICUBIC","LANCZOS"],
+                                  {"default":"NEAREST","tooltip":"像素画选NEAREST；照片选LANCZOS"}),
+                "color_mode": (["rgba","rgb","grayscale","indexed_palette"],
+                               {"default":"rgba","tooltip":"色彩模式；indexed_palette为调色板模式"}),
+                "num_index_colors": ("INT", {
+                    "default":16, "min":2, "max":256, "step":1, "display":"number",
+                    "tooltip":"仅indexed_palette生效，自适应调色板颜色数量"
+                }),
+                "palette_gpl_path": ("STRING", {
+                    "default":"", "multiline":False,
+                    "tooltip":"Aseprite导出gpl调色板绝对路径；留空使用图片自适应quantize"
                 }),
             },
+            "optional":{
+                "enable_bmp": ("BOOLEAN", {"default":False, "tooltip":"额外输出bmp文件；PNG总是强制输出"}),
+                "output_dir": ("STRING", {"default":"", "multiline":False, "tooltip":"输出目录绝对路径"}),
+                "output_filename": ("STRING", {"default":"out", "multiline":False, "tooltip":"输出文件名，不带后缀"}),
+            }
         }
-
-    RETURN_TYPES = ("IMAGE",)
-    #RETURN_NAMES = ("image_output_name",)
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("output_png_path",)
+    FUNCTION = "run"
+    CATEGORY = "PixelTools"
+    OUTPUT_NODE = True
     DESCRIPTION = cleandoc(__doc__)
-    FUNCTION = "test"
 
-    #OUTPUT_NODE = False
-    #OUTPUT_TOOLTIPS = ("",) # Tooltips for the output node
+    async def run(self,
+                  image,
+                  resize_width,
+                  resize_height,
+                  resize_filter,
+                  color_mode,
+                  num_index_colors,
+                  palette_gpl_path,
+                  enable_bmp=False,
+                  output_dir="",
+                  output_filename="out"):
 
-    CATEGORY = "Example"
+        out_dir = Path(output_dir).absolute()
+        os.makedirs(out_dir, exist_ok=True)
+        out_base = out_dir / output_filename
 
-    def test(self, image, string_field, int_field, float_field, print_to_screen):
-        if print_to_screen == "enable":
-            print(f"""Your input contains:
-                string_field aka input text: {string_field}
-                int_field: {int_field}
-                float_field: {float_field}
-            """)
-        #do some processing on the image, in this example I just invert it
-        image = 1.0 - image
-        return (image,)
+        # ComfyUI IMAGE tensor [B,H,W,C] float 0‑1 → PIL
+        img_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
+        pil_img = Image.fromarray(img_np)
 
+        processed = process_one_pil_image(
+            pil_img,
+            resize_width=resize_width,
+            resize_height=resize_height,
+            resize_filter=resize_filter,
+            color_mode=color_mode,
+            num_index_colors=num_index_colors,
+            palette_gpl=palette_gpl_path
+        )
+        png_path = save_multi_formats(processed, out_base, enable_bmp)
+        return (png_path,)
+
+
+class ImageDownscaleQuantizeBatchFolder:
     """
-        The node will always be re executed if any of the inputs change but
-        this method can be used to force the node to execute again even when the inputs don't change.
-        You can make this node return a number or a string. This value will be compared to the one returned the last time the node was
-        executed, if it is different the node will be executed again.
-        This method is used in the core repo for the LoadImage node where they return the image hash as a string, if the image hash
-        changes between executions the LoadImage node is executed again.
+    批量磁盘目录处理节点，不接收IMAGE张量，读取本地png序列图片
+    文件匹配范式： {file_prefix}_0000x_.png  例如 img_00001_.png
+    trigger时序端口，等待上游磁盘写入完成；仅落盘无数据输出
+    注意：
+      1. indexed(P模式)仅PNG完整保存调色板+透明；BMP会降级丢失调色板与透明；
+      2. Aseprite: Sprite‑>Save Palette导出 .gpl(GIMP Palette)，不支持ase/act；
+      3. 像素画优先resize_filter=NEAREST；照片使用LANCZOS
     """
-    #@classmethod
-    #def IS_CHANGED(s, image, string_field, int_field, float_field, print_to_screen):
-    #    return ""
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "source_dir": ("STRING", {"default":"","multiline":False,"tooltip":"源图片目录绝对路径，只读取png文件"}),
+                "file_prefix": ("STRING", {"default":"img","tooltip":"匹配 img_00001_.png 这类命名"}),
+                "appendix": ("STRING", {"default":"png","tooltip":"源文件后缀，固定png，不要修改"}),
+                "resize_width": ("INT", {
+                    "default":128, "min":8, "max":256, "step":1, "display":"number",
+                    "tooltip":"输出图片宽度，上限256"
+                }),
+                "resize_height": ("INT", {
+                    "default":128, "min":8, "max":256, "step":1, "display":"number",
+                    "tooltip":"输出图片高度，上限256"
+                }),
+                "resize_filter": (["NEAREST","BILINEAR","BICUBIC","LANCZOS"],
+                                  {"default":"NEAREST","tooltip":"像素画选NEAREST；照片选LANCZOS"}),
+                "color_mode": (["rgba","rgb","grayscale","indexed_palette"],
+                               {"default":"rgba","tooltip":"色彩模式；indexed_palette为调色板模式"}),
+                "num_index_colors": ("INT", {
+                    "default":16, "min":2, "max":256, "step":1, "display":"number",
+                    "tooltip":"仅indexed_palette生效，自适应调色板颜色数量"
+                }),
+                "palette_gpl_path": ("STRING", {
+                    "default":"", "multiline":False,
+                    "tooltip":"Aseprite导出gpl调色板绝对路径；留空使用图片自适应quantize"
+                }),
+            },
+            "optional":{
+                "enable_bmp": ("BOOLEAN", {"default":False, "tooltip":"额外输出bmp文件；PNG总是强制输出"}),
+                "output_dir": ("STRING", {"default":"","multiline":False, "tooltip":"输出目录绝对路径"}),
+                "trigger": ("*", {"tooltip":"时序触发端口，等待上游磁盘写入完成再执行处理"}),
+            }
+        }
+    RETURN_TYPES = ()
+    FUNCTION = "run"
+    CATEGORY = "PixelTools"
+    OUTPUT_NODE = True
+    DESCRIPTION = cleandoc(__doc__)
+
+    async def run(self,
+                  source_dir,
+                  file_prefix,
+                  appendix,
+                  resize_width,
+                  resize_height,
+                  resize_filter,
+                  color_mode,
+                  num_index_colors,
+                  palette_gpl_path,
+                  enable_bmp=False,
+                  output_dir="",
+                  trigger=None):
+
+        src_dir = Path(source_dir).absolute()
+        if not src_dir.is_dir():
+            raise NotADirectoryError(f"源目录不存在：{src_dir}")
+        out_dir = Path(output_dir).absolute()
+        os.makedirs(out_dir, exist_ok=True)
+
+        # 匹配范式 img_00001_.png
+        escaped_pre = re.escape(file_prefix)
+        pat = re.compile(rf"^{escaped_pre}_(\d+)_\.{re.escape(appendix)}$", re.IGNORECASE)
+        matched = []
+        for fname in os.listdir(src_dir):
+            m = pat.match(fname)
+            if m:
+                seq = int(m.group(1))
+                matched.append((seq, fname))
+        if len(matched) == 0:
+            raise FileNotFoundError(f"目录 {src_dir} 未找到 {file_prefix}_xxxx_.{appendix}")
+        matched.sort(key=lambda x:x[0])
+        print(f"\n==== ImageDownscaleQuantizeBatchFolder 共找到 {len(matched)} 张待处理图片 ====")
+
+        for seq, fname in matched:
+            src_file = src_dir / fname
+            pil_img = Image.open(src_file).convert("RGBA")
+            processed = process_one_pil_image(
+                pil_img,
+                resize_width=resize_width,
+                resize_height=resize_height,
+                resize_filter=resize_filter,
+                color_mode=color_mode,
+                num_index_colors=num_index_colors,
+                palette_gpl=palette_gpl_path
+            )
+            # 沿用原文件名，不带后缀
+            base_name = Path(fname).stem
+            out_base = out_dir / base_name
+            save_multi_formats(processed, out_base, enable_bmp)
+            print(f"  > processed: {fname}")
+
+        print(f"==== ImageDownscaleQuantizeBatchFolder 全部处理完成 ====\n")
+        return {}
 
 
-# A dictionary that contains all nodes you want to export with their names
-# NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
-    "Example": Example
+    "ImageDownscaleQuantizeSingle": ImageDownscaleQuantizeSingle,
+    "ImageDownscaleQuantizeBatchFolder": ImageDownscaleQuantizeBatchFolder
 }
 
-# A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Example": "Example Node"
+    "ImageDownscaleQuantizeSingle": "Pixel‑Downscale‑Quantize 单图",
+    "ImageDownscaleQuantizeBatchFolder": "Pixel‑Downscale‑Quantize 批量目录"
 }

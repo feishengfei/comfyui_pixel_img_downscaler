@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pixel_img_downscaler"
 version = "0.0.1"
-description = "Downscale T2I generated 8bit style image(size/color) for size saving["
+description = "Downscale T2I generated 8bit style image size and color for size saving"
 authors = [
   {name = "comfyui-pixel-img-downscaler", email = "feishengfei@126.com"}
 ]
@@ -14,7 +14,7 @@ license = {text = "MIT license"}
 requires-python = ">=3.10"
 classifiers = []
 dependencies = [
-
+    "pillow>=10.0.0"
 ]
 
 
