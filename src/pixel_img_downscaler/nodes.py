@@ -76,15 +76,16 @@ def process_one_pil_image(pil_img: Image.Image,
     return pil_img
 
 
-def save_multi_formats(pil_img:Image.Image, out_base:Path, enable_bmp:bool):
+def save_multi_formats(pil_img:Image.Image, out_base:Path, enable_bmp:bool, png_compression_level:int):
     """
     PNG强制总是输出；可选额外输出BMP
     注意：P(indexed)模式保存BMP会自动降级RGB，丢失调色板与透明
+    :param png_compression_level: 0‑9 png压缩等级，4为ComfyUI默认
     返回：png输出完整路径
     """
     png_path = out_base.with_suffix(".png")
-    pil_img.save(png_path, format="PNG")
-    print(f"💾 Saved png: {png_path}")
+    pil_img.save(png_path, format="PNG", compress_level=png_compression_level)
+    print(f"💾 Saved png: {png_path} | compression_level={png_compression_level}")
 
     if enable_bmp:
         bmp_path = out_base.with_suffix(".bmp")
@@ -105,11 +106,13 @@ class ImageDownscaleQuantizeSingle:
     - 缩放尺寸最大256px
     - 支持rgba/rgb/grayscale/indexed_palette
     - 可加载Aseprite导出 .gpl调色板
-    - PNG强制输出；可额外输出BMP
+    - PNG强制输出；可额外输出BMP；支持png压缩等级
+    - 实现ui返回结构，ComfyUI前端可预览生成图片
     注意：
       1. indexed(P模式)仅PNG完整保存调色板+透明；BMP会降级丢失调色板与透明；
       2. Aseprite: Sprite‑>Save Palette导出 .gpl(GIMP Palette)，不支持ase/act；
       3. 像素画优先resize_filter=NEAREST；照片使用LANCZOS
+      4. png_compression_level: 0无压缩，9最大压缩，ComfyUI原生SaveImage默认=4
     """
     @classmethod
     def INPUT_TYPES(s):
@@ -138,6 +141,10 @@ class ImageDownscaleQuantizeSingle:
                 }),
             },
             "optional":{
+                "png_compression_level": ("INT", {
+                    "default":4, "min":0, "max":9, "step":1, "display":"number",
+                    "tooltip":"PNG压缩等级，0=无压缩，9=最高压缩；ComfyUI SaveImage默认4"
+                }),
                 "enable_bmp": ("BOOLEAN", {"default":False, "tooltip":"额外输出bmp文件；PNG总是强制输出"}),
                 "output_dir": ("STRING", {"default":"", "multiline":False, "tooltip":"输出目录绝对路径"}),
                 "output_filename": ("STRING", {"default":"out", "multiline":False, "tooltip":"输出文件名，不带后缀"}),
@@ -158,6 +165,7 @@ class ImageDownscaleQuantizeSingle:
                   color_mode,
                   num_index_colors,
                   palette_gpl_path,
+                  png_compression_level=4,
                   enable_bmp=False,
                   output_dir="",
                   output_filename="out"):
@@ -179,15 +187,28 @@ class ImageDownscaleQuantizeSingle:
             num_index_colors=num_index_colors,
             palette_gpl=palette_gpl_path
         )
-        png_path = save_multi_formats(processed, out_base, enable_bmp)
-        return (png_path,)
+        png_path = save_multi_formats(processed, out_base, enable_bmp, png_compression_level)
+
+        # --- 构造ComfyUI前端ui预览数据，对齐SaveImage格式
+        png_p = Path(png_path)
+        subfolder = str(png_p.parent.relative_to(Path(os.getcwd())))
+        ui_result = {
+            "images": [
+                {
+                    "filename": png_p.name,
+                    "subfolder": subfolder,
+                    "type": "output"
+                }
+            ]
+        }
+        return {"ui": ui_result, "result": (png_path,)}
 
 
 class ImageDownscaleQuantizeBatchFolder:
     """
     批量磁盘目录处理节点，不接收IMAGE张量，读取本地png序列图片
     文件匹配范式： {file_prefix}_0000x_.png  例如 img_00001_.png
-    trigger时序端口，等待上游磁盘写入完成；仅落盘无数据输出
+    trigger时序端口，等待上游磁盘写入完成；仅落盘无数据输出，无UI预览
     注意：
       1. indexed(P模式)仅PNG完整保存调色板+透明；BMP会降级丢失调色板与透明；
       2. Aseprite: Sprite‑>Save Palette导出 .gpl(GIMP Palette)，不支持ase/act；
@@ -222,6 +243,10 @@ class ImageDownscaleQuantizeBatchFolder:
                 }),
             },
             "optional":{
+                "png_compression_level": ("INT", {
+                    "default":4, "min":0, "max":9, "step":1, "display":"number",
+                    "tooltip":"PNG压缩等级，0=无压缩，9=最高压缩；ComfyUI SaveImage默认4"
+                }),
                 "enable_bmp": ("BOOLEAN", {"default":False, "tooltip":"额外输出bmp文件；PNG总是强制输出"}),
                 "output_dir": ("STRING", {"default":"","multiline":False, "tooltip":"输出目录绝对路径"}),
                 "trigger": ("*", {"tooltip":"时序触发端口，等待上游磁盘写入完成再执行处理"}),
@@ -243,6 +268,7 @@ class ImageDownscaleQuantizeBatchFolder:
                   color_mode,
                   num_index_colors,
                   palette_gpl_path,
+                  png_compression_level=4,
                   enable_bmp=False,
                   output_dir="",
                   trigger=None):
@@ -282,7 +308,7 @@ class ImageDownscaleQuantizeBatchFolder:
             # 沿用原文件名，不带后缀
             base_name = Path(fname).stem
             out_base = out_dir / base_name
-            save_multi_formats(processed, out_base, enable_bmp)
+            save_multi_formats(processed, out_base, enable_bmp, png_compression_level)
             print(f"  > processed: {fname}")
 
         print(f"==== ImageDownscaleQuantizeBatchFolder 全部处理完成 ====\n")
