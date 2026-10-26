@@ -1,67 +1,75 @@
-# comfyui-pixel-img-downscaler
+# comfyui‑pixel‑img‑downscaler
+ComfyUI custom node for pixel‑style image downscaling & color‑quantization, reduce image file size.
 
-Downscale T2I generated 8bit style image(size/color) for size saving[
+## Features
+- Two nodes: single image processing / batch folder processing
+- Image downscale, max size 256×256
+- Resample filter: `NEAREST` / `BILINEAR` / `BICUBIC` / `LANCZOS`
+- Color modes: `rgba`, `rgb`, `grayscale`, `indexed_palette`
+- Load external `.gpl` palette exported from Aseprite(Sprite → Save Palette → GIMP Palette *.gpl)
+- PNG forced output, optional extra BMP export
+- PNG compression level configurable(0‑9, default=4, same as ComfyUI SaveImage)
+- Single‑image node supports ComfyUI frontend image preview via `ui` return
+- Batch node with `trigger` input for disk‑write sequencing lock
 
-> [!NOTE]
-> This projected was created with a [cookiecutter](https://github.com/Comfy-Org/cookiecutter-comfy-extension) template. It helps you start writing custom nodes without worrying about the Python setup.
+> Limitations
+> 1. BMP does **not support indexed‑P‑mode and alpha channel**. If input is indexed‑palette, BMP output will auto downgrade to RGB and lose palette/transparency.
+> 2. Only read `.gpl` palette format. **No support for `.ase` / `.aseprite` binary format**.
+> 3. Front‑end preview works best under ComfyUI `output/` directory; absolute external paths may fail browser cross‑domain preview, but disk files generate normally.
 
-## Quickstart
-
-1. Install [ComfyUI](https://docs.comfy.org/get_started).
-1. Install [ComfyUI-Manager](https://github.com/ltdrdata/ComfyUI-Manager)
-1. Look up this extension in ComfyUI-Manager. If you are installing manually, clone this repository under `ComfyUI/custom_nodes`.
-1. Restart ComfyUI.
-
-# Features
-
-- A list of features
-
-## Develop
-
-To install the dev dependencies and pre-commit (will run the ruff hook), do:
-
+## Install
 ```bash
+git clone https://github.com/feishengfei/pixel_img_downscaler
 cd pixel_img_downscaler
-pip install -e .[dev]
-pre-commit install
+pip install -e .
 ```
+Restart ComfyUI. Nodes appear under category `PixelTools`.
 
-The `-e` flag above will result in a "live" install, in the sense that any changes you make to your node extension will automatically be picked up the next time you run ComfyUI.
+## Node List
+### Pixel‑Downscale‑Quantize 单图
+Inputs
+- `image`: IMAGE tensor from LoadImage
+- `resize_width` / `resize_height`: 8‑256
+- `resize_filter`: resample algorithm, pixel‑art recommend `NEAREST`
+- `color_mode`: rgba / rgb / grayscale / indexed_palette
+- `num_index_colors`: color count for quantize(2‑256, only indexed_palette)
+- `palette_gpl_path`: absolute path to Aseprite exported `.gpl` palette file, empty for auto‑quantize
+- `png_compression_level`: 0‑9, default=4
+- `enable_bmp`: bool, extra output bmp file
+- `output_dir`: absolute output directory
+- `output_filename`: output base filename without extension
 
-## Publish to Github
+Outputs
+- `output_png_path`: absolute path of saved png file
+- UI preview: ComfyUI frontend preview rendered image
 
-Install Github Desktop or follow these [instructions](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent) for ssh.
+### Pixel‑Downscale‑Quantize 批量目录
+Inputs
+- `source_dir`: absolute source folder with png sequence
+- `file_prefix`: filename prefix, match pattern `prefix_0000x_.png`
+- `appendix`: fixed `png`
+- `resize_width` / `resize_height`: 8‑256
+- `resize_filter`: resample algorithm
+- `color_mode`: rgba / rgb / grayscale / indexed_palette
+- `num_index_colors`: color count for quantize
+- `palette_gpl_path`: absolute `.gpl` palette file path
+- `png_compression_level`: 0‑9
+- `enable_bmp`: bool
+- `output_dir`: absolute output directory
+- `trigger`: trigger port for sequential disk processing
 
-1. Create a Github repository that matches the directory name. 
-2. Push the files to Git
-```
-git add .
-git commit -m "project scaffolding"
-git push
-``` 
+Outputs
+- No data output, only write files to disk.
 
-## Writing custom nodes
+## Aseprite Palette Usage
+1. Open your palette inside Aseprite
+2. Menu: `Sprite` → `Save Palette`
+3. Select format: **GIMP Palette(*.gpl)**
+4. Copy absolute file path into node input `palette_gpl_path`. Leave empty for auto‑color quantization.
 
-An example custom node is located in [node.py](src/pixel_img_downscaler/nodes.py). To learn more, read the [docs](https://docs.comfy.org/essentials/custom_node_overview).
+## Dependencies
+- pillow >= 10.0.0
+- comfyui environment (python >=3.10)
 
-
-## Tests
-
-This repo contains unit tests written in Pytest in the `tests/` directory. It is recommended to unit test your custom node.
-
-- [build-pipeline.yml](.github/workflows/build-pipeline.yml) will run pytest and linter on any open PRs
-- [validate.yml](.github/workflows/validate.yml) will run [node-diff](https://github.com/Comfy-Org/node-diff) to check for breaking changes
-
-## Publishing to Registry
-
-If you wish to share this custom node with others in the community, you can publish it to the registry. We've already auto-populated some fields in `pyproject.toml` under `tool.comfy`, but please double-check that they are correct.
-
-You need to make an account on https://registry.comfy.org and create an API key token.
-
-- [ ] Go to the [registry](https://registry.comfy.org). Login and create a publisher id (everything after the `@` sign on your registry profile). 
-- [ ] Add the publisher id into the pyproject.toml file.
-- [ ] Create an api key on the Registry for publishing from Github. [Instructions](https://docs.comfy.org/registry/publishing#create-an-api-key-for-publishing).
-- [ ] Add it to your Github Repository Secrets as `REGISTRY_ACCESS_TOKEN`.
-
-A Github action will run on every git push. You can also run the Github action manually. Full instructions [here](https://docs.comfy.org/registry/publishing). Join our [discord](https://discord.com/invite/comfyorg) if you have any questions!
-
+## License
+MIT
