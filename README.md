@@ -19,8 +19,8 @@ ComfyUI custom node for pixel‑style image downscaling & color‑quantization, 
 
 ## Install
 ```bash
-git clone https://github.com/feishengfei/pixel_img_downscaler
-cd pixel_img_downscaler
+git clone https://github.com/feishengfei/comfyui_pixel_img_downscaler
+cd comfyui_pixel_img_downscaler
 pip install -e .
 ```
 Restart ComfyUI. Nodes appear under category `PixelTools`.
